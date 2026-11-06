@@ -116,8 +116,10 @@ acct_resolve() {
     local re_senv='"env"[[:space:]]*:[[:space:]]*\{[^{}]*"CLAUDE_CODE_OAUTH_TOKEN"[[:space:]]*:[[:space:]]*"([^"]+)"'
     for sn in settings.json settings.local.json; do
       sc=""; [ -f "$sd/$sn" ] && { IFS= read -r -d '' sc < "$sd/$sn" || :; }
+      # Match the text as read: [^{}] and [[:space:]] already cover newlines, and stripping them with
+      # ${sc//$'\n'/} takes seconds on bash 3.2 (macOS) once settings.json is a few tens of KB.
       shopt -s nocasematch
-      [[ ${sc//$'\n'/} =~ $re_senv ]] && tok=${BASH_REMATCH[1]}
+      [[ $sc =~ $re_senv ]] && tok=${BASH_REMATCH[1]}
       shopt -u nocasematch
       sc=""
       [ -n "$tok" ] && break
@@ -127,10 +129,18 @@ acct_resolve() {
     f="$sd/.credentials.json"
     [ -f "$f" ] && { IFS= read -r -d '' c < "$f" || :; }
     local re_tok='"claudeAiOauth"[[:space:]]*:[[:space:]]*\{[^{}]*"accessToken"[[:space:]]*:[[:space:]]*"([^"]+)"'
-    [[ ${c//$'\n'/} =~ $re_tok ]] && tok=${BASH_REMATCH[1]}
+    [[ $c =~ $re_tok ]] && tok=${BASH_REMATCH[1]}
     c=""
   fi
-  [ -n "$tok" ] || return 0
+  if [ -z "$tok" ]; then
+    # No token readable (macOS keeps it in the Keychain): fall back to the signed-in account in
+    # <config dir>/.claude.json (oauthAccount.emailAddress). Local file only, no network. One grep,
+    # not a bash regex, because that file can be large. Orca gives each account its own config dir.
+    local oa=""
+    [ -f "$sd/.claude.json" ] && oa=$(grep -m1 -oE '"emailAddress"[[:space:]]*:[[:space:]]*"[^"@]+@' "$sd/.claude.json" 2>/dev/null)
+    if [ -n "$oa" ]; then oa=${oa%@}; oa=${oa##*\"}; acct_who=${oa//[^A-Za-z0-9._-]/}; fi
+    return 0
+  fi
   local shacmd
   if command -v sha256sum >/dev/null 2>&1; then shacmd="sha256sum"
   elif command -v shasum >/dev/null 2>&1; then shacmd="shasum -a 256"
